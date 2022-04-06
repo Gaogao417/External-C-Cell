@@ -39,7 +39,7 @@ ExternalEvaluate`FE`GetExternalLanguageMenuData[] := (
     (* This flag variable must appear within this function to get proper Dynamic updating *)
     ExternalEvaluate`FE`$ExternalLanguageMenuDataChanged;
   	Map[
-		{#, GetLanguageRules[#, "IconCell"], "  " <> # <> " "}&,
+		{#, ReleaseHold @ GetLanguageRules[#, "IconCell"], "  " <> # <> " "}&,
 		(* The set of all language names we want to list in the menu, in order *)
 		Select[
             GetLanguageRules[],

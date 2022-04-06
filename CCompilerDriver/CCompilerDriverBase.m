@@ -1,3 +1,5 @@
+(* ::Package:: *)
+
 BeginPackage["CCompilerDriver`CCompilerDriverBase`"]
 
 BaseDriver::usage = "BaseDriver[method][args] is called by compiler drivers to defer to base class functionality."
@@ -19,8 +21,6 @@ DeriveOptions::usage = "DeriveOptions[opts, exceptions] returns an options list 
 EnsureDirectoryExists::usage = "EnsureDirectoryExists[dir] attempts to create dir if it does not exist"
 
 $ILP64::usage = "$ILP64 returns True if the hardware architecture uses ILP64."
-
-GetOption::usage = "GetOption[driver, errHd, options, name] returns the option value of name according to the options for driver, using errHd to generate messages for typical values of CreateObjectFile, CreateLibrary, and CreateExecutable."
 
 IncludePath::usage = "IncludePath[driver, errHd, options] returns a list of include path directives based on the contents of the options list."
 
@@ -64,6 +64,8 @@ WSTPCompilerAdditionsPath::usage = "WSTPCompilerAdditionsPath[sysid] returns the
 
 MacOSXVersionMinFlag::usage = "MacOSXVersionMinFlag[] returns the minimum target macOS deployment version flag."
 
+ErrorDisplay::usage = "Return CCompilerDriver`CreateLibrary Error messages";
+
 (*** Messages ***)
 
 General::csrcfile = "C source file `1` was not found during compilation."
@@ -74,7 +76,10 @@ General::wddel = "The C compiler working directory is not empty, files will be r
 
 CommandJoin::type = "Non-string expressions found: `1`"
 
-Begin["`Private`"] (* Begin Private Context *) 
+Begin["`Private`"] (* Begin Private Context *)
+
+GetOption::usage = "GetOption[driver, errHd, options, name] returns the option value of name according to the options for driver, using errHd to generate messages for typical values of CreateObjectFile, CreateLibrary, and CreateExecutable."
+
 
 Needs["CCompilerDriver`"] (* to pick up QuoteFile and QuoteFiles *)
 
@@ -192,18 +197,116 @@ $MathLinkPath = FileNameJoin[{$InstallationDirectory, "SystemFiles", "Links", "M
 
 $WSTPPath = FileNameJoin[{$InstallationDirectory, "SystemFiles", "Links", "WSTP"}]
 
+
+
+(*Error message mark up*)
+Needs["CompileUtilities`Markup`"]
+
+getErrors = errors |->
+DeleteCases[
+	Map[
+		error |-> StringCases[__~~".c("~~x:NumberString~~")"~~__~~":"~~y__:>{ToExpression@x, StringTrim@y}][error]//Flatten,
+		errors],
+	{}]
+
+fixmarkupBUG = StringReplace[#, "\""->"\\\""]&;
+normalLine[args___] := markup[{args//fixmarkupBUG}, FontColor->RGBColor[0.269, 0.538, 0.356]]
+errorLine[args___] := markup[{args//fixmarkupBUG}, FontColor->RGBColor[0,0,0.93], Background->RGBColor[1, 0.85, 0.85]]
+errorLineLabel[args___] := errorLine[args]
+
+errorMessage[args___] := BoldRedText[args<>"\n"//fixmarkupBUG]
+
+$breakLine = "------------------------------------------------------------\n";
+$beginLine = "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n";
+
+ErrorDisplay = {csrc, ERRORS, buildCommand} |->
+Block[{lines, errors, notes, warnings, errCount = 0, errorLineIndex, noteLineIndex, warningLineIndex},
+	{errors, notes, warnings} = ERRORS;
+	errors = getErrors[errors];
+	notes = getErrors[notes];
+	warnings = getErrors[warnings];
+	errorLineIndex = errors[[;;, 1]];
+	noteLineIndex = notes[[;;, 1]];
+	warningLineIndex = warnings[[;;, 1]];
+	
+	lines = StringSplit[csrc, "\n"];
+	PrependTo[lines, 
+		StringJoin[
+			BoldBlueText["Source File: "],
+			BoldBlackText[StringReplace[buildCommand, ".bat"->".c"]],
+			"\n"]
+			];
+	
+	StringJoin[MapIndexed[
+		Module[{i = First[#2]}, 
+			Which[
+				i == 1,
+					{$beginLine<>#1<>$breakLine},
+				MemberQ[errorLineIndex, i - 1]||MemberQ[noteLineIndex, i - 1]||MemberQ[warningLineIndex, i - 1], 
+				StringJoin[
+						ToString[i]<>" |\t"//errorLineLabel, 
+						errorLine@#1, "\n", 
+						$breakLine,
+						If[MemberQ[errorLineIndex, i - 1],
+							Prepend[
+								errorMessage/@errors[[Flatten@Position[errorLineIndex, i - 1], 2]]
+								, LabelText@"Error:\n"](*//Echo[#, 1, x|->ToString[x, InputForm]]&*),
+							""
+							],
+						If[MemberQ[noteLineIndex, i - 1], 
+							Prepend[
+								errorMessage/@notes[[Flatten@Position[noteLineIndex, i - 1], 2]]
+								, LabelText@"Note:\n"](*//Echo[#, 1, x|->ToString[x, InputForm]]&*),
+							""
+							],
+						If[MemberQ[warningLineIndex, i - 1], 
+							Prepend[
+								errorMessage/@warnings[[Flatten@Position[warningLineIndex, i - 1], 2]]
+								, LabelText@"Warning:\n"],
+							""
+							],
+						$breakLine
+						]	
+				,
+				True, 
+					StringJoin[ToString[First[#2]]<>" |\t"//VeryLightGrayText, normalLine@#1, "\n"]
+					]
+				]&
+		,
+		lines
+		],
+		$breakLine]
+	]	
+
+
+
 (******************************************************************************)
 BuildAndClean[driver_, errHd_, buildCommand_, outFiles:{outFile_, ___}, 
-	funName_, workDir_, cleanIntermediate_, opts___] := 
+	funName_, workDir_, cleanIntermediate_, code_, opts___] := 
 	Module[{workingOutfile, workingOutfiles, buildOutput, handleShellOutput, 
-		result, errors},
+		result, errors, notes, warnings, session},
 		workingOutfile = WorkingOutputFile[workDir, outFile];
 		workingOutfiles = WorkingOutputFile[workDir, #]& /@ outFiles;
 		Quiet[Scan[DeleteFile, outFiles]];
 		ChangeDirectoryBlock[workDir,
 			Quiet[Scan[DeleteFile, workingOutfiles]];
+			session = StartExternalSession[<|"System" -> "Shell", "Target" -> "C:\\Windows\\System32\\cmd.exe"|>];
+			(* buildOutput = ExternalEvaluate[session, buildCommand<>" 2>&1"]; *)
 
-			buildOutput = Import["!"<>buildCommand<>" 2>&1", "Text"];
+			buildOutput = 
+			(
+				BinaryWrite[
+					ProcessConnection[session["Process"], "StandardInput"],
+					StringToByteArray[buildCommand<>" 2>&1\r\n", "CP936"]];
+
+				Import["!"<>buildCommand<>" 2>&1\r\n", "Text"]; (*Wait for compilation complete*)
+
+				BinaryReadList[
+   					ProcessConnection[session["Process"], "StandardOutput"]] // ByteArray // ByteArrayToString[#, "CP936"] &
+				);
+
+			DeleteObject[session]; 
+			(* buildOutput = Import["!"<>buildCommand<>" 2>&1", "Text"]//Echo; *)
 
 			result = 
 				If[FileType[workingOutfile] === File, 
@@ -215,14 +318,33 @@ BuildAndClean[driver_, errHd_, buildCommand_, outFiles:{outFile_, ___},
 				(* Else *), 
 					$Failed
 				];
+			
+			
 			handleShellOutput = Quiet@OptionValue[driver, opts, 
 				"ShellOutputFunction"];
 			If[handleShellOutput =!= None, handleShellOutput[buildOutput]];
 
-			errors = driver["ExtractErrors"][buildOutput];
-			If[ListQ[errors],
-				Do[Message[errHd::cmperr, err], {err, errors}]
+			{errors, notes, warnings} = driver["ExtractErrors"][buildOutput];
+			(*Echo[{errors, notes, warnings}];*)
+			If[
+				{errors, notes, warnings} != {{}, {}, {}},
+				(*Do[Message[errHd::cmperr, err], {err, errors}];*)
+				Message[errHd::cmperr, 
+					StringJoin[
+						ToString[Length@errors]<>" errors, ",
+						ToString[Length@notes]<>" notes, ",
+						ToString[Length@warnings]<>" warnings."]
+						];
+				Map[
+					error |-> If[Not@StringMatchQ[__~~".c("~~NumberString~~")"~~__~~":"~~__][error], Print[error]],
+					Flatten@{errors, notes, warnings}
+					];
+				ErrorDisplay[
+					code, 
+					{errors, notes, warnings}, 
+					buildCommand]//Print
 			];
+			
 
 			CleanIntermediateFiles[driver, errHd, funName, workDir, outFiles, 
 				opts];
@@ -794,7 +916,7 @@ InvokeCompilerImpl[driver_, compileFn_, errMsgHd_, ext_,
 			tmcFiles = Cases[srcFileRules, Rule[_, out_] :> out];
 			objFiles = ConvertSourceToObject[cFiles, $PlatformObjExtension];
 			BuildAndClean[driver, errMsgHd, buildCommand, outFiles, 
-				outputBaseName, workDir, cleanIntermediate,
+				outputBaseName, workDir, cleanIntermediate, code, 
 				Append[opts,
 					"ExtraIntermediateFiles" -> Join[tmcFiles, objFiles]]]
 		(* Else *),
@@ -1186,3 +1308,6 @@ MacOSXVersionMinFlag[___] := ""
 End[] (* End Private Context *)
 
 EndPackage[]
+
+
+

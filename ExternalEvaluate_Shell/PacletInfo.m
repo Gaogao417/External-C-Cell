@@ -1,12 +1,12 @@
 Paclet[
 	"Name" -> "ExternalEvaluate_Shell",
-	"Version" -> "31.0.0",
+	"Version" -> "32.0.0",
 	"MathematicaVersion" -> "12.3+",
 	"AutoUpdating" -> True,
 	"Extensions" -> {
 		{
 			"ExternalEvaluate", 
-			"Language" -> {"Shell"}, 
+			"System" -> {"Shell" -> {"Ordering" -> "0800"}}, 
 			"Context" -> {"ExternalEvaluateShell`"}
 		},
 		{   
@@ -19,6 +19,7 @@ Paclet[
 			"Resource",
 			"Root" -> ".",
 			"Resources" -> {
+				"TestData",
 	    		{"Icon",     "Resources/IconNormal.wxf"},
 	    		{"IconCell", "Resources/IconGray.wxf"}
 	    	}

@@ -1,12 +1,12 @@
 Paclet[
 	"Name" -> "ExternalEvaluate_Ruby",
-	"Version" -> "31.0.0",
+	"Version" -> "32.0.0",
 	"MathematicaVersion" -> "12.3+",
-	"AutoUpdating" -> True,
+	"AutoUpdating" -> False,
 	"Extensions" -> {
 		{
 			"ExternalEvaluate", 
-			"Language" -> {"Ruby"}, 
+			"System" -> {"Ruby" -> {"Ordering" -> "0600"}}, 
 			"Context" -> {"ExternalEvaluateRuby`"}
 		},
 		{   
@@ -19,7 +19,7 @@ Paclet[
 			"Resource",
 			"Root" -> ".",
 			"Resources" -> {
-		    	{"REPL",     "Resources/start_ruby.rb"},
+		    	(*{"REPL",     "Resources/start_ruby.rb"},*)
 		    	{"Icon",     "Resources/IconNormal.wxf"},
 		    	{"IconCell", "Resources/IconGray.wxf"}
 	    	}

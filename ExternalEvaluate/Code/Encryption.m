@@ -34,10 +34,13 @@ genKey[] :=
         Except[_ByteArray] :> ByteArray[RandomInteger[{0, 255}, 48]]
     ]
 
-genKey[key_ByteArray] := GenerateSymmetricKey[
-    key[[1;;32]], 
-    Method -> <|"Cipher" -> "AES256", "InitializationVector" -> key[[-16;;]]|>
-]
+genKey[key_ByteArray] := {
+    GenerateSymmetricKey[
+        key[[1;;32]], 
+        Method -> <|"Cipher" -> "AES256"|>
+    ],
+    key[[-16;;]]
+}
 genKey[s_String] := Replace[
     Quiet[BaseDecode[s]], {
         b_ByteArray /; SameQ[Length[b], 48] :> genKey[b],
@@ -45,12 +48,12 @@ genKey[s_String] := Replace[
     }
 ]
 
-encode[key_] := BaseEncode @ Join[
+encode[{key_, vec_}] := BaseEncode @ Join[
     key["Key"],
-    key["InitializationVector"]
+    vec
 ]
 
-$encryptionPassword := $encryptionPassword = 
+$encryptionArguments := $encryptionArguments = 
     autofail @ Replace[
         SystemCredential["ExternalEvaluateRegistry"], {
             s_String :> autofail @ genKey[s],
@@ -76,7 +79,7 @@ $sensitivePattern := $sensitivePattern =
 
 decrypt[HoldPattern[e_EncryptedObject]] :=
     Replace[
-        Quiet[Decrypt[$encryptionPassword, e], Decrypt::failed],
+        Quiet[Decrypt[First @ $encryptionArguments, e], Decrypt::failed],
         _?FailureQ :> $decryptFailure
     ]
 
@@ -97,5 +100,5 @@ decrypt[expr_] :=
 encrypt[expr_] :=
     ReplaceAll[
         expr, 
-        e:$sensitivePattern :> RuleCondition[Encrypt[$encryptionPassword, e]]
+        e:$sensitivePattern :> RuleCondition[Function[{key, vec}, Encrypt[key, e, Method -> <|"InitializationVector" -> vec|>]] @@ $encryptionArguments]
     ]

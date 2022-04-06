@@ -61,10 +61,10 @@ makeCommandNormalizationFunction[spec_] :=
 				TrueQ @ spec["StringTemplateSupportQ"],
 				Function[
 					If[
-						StringMatchQ[#Command, Alternatives[
-							___~~"<*" ~~ ___ ~~ "*>" ~~ ___,
-							___~~"`" ~~ ___ ~~ "`" ~~ ___
-						]],
+						(* this is a quick check to see if we can entirly skip the template parsing. 
+							the check is not perfect and it might take a false positive (hello <* ` world), but it's one of the least expensive computationally.
+						*)
+						StringCount[#Command, {"<*", "*>", "`"}] >= 2, 
 						Append[#, convertStringTemplate[
 							vname,
 							vid,
@@ -132,16 +132,8 @@ convertStringTemplate[vname_, vid_, str_, arguments_, extra___] :=
 	]
 	
 
-
-
-
-$DefaultIcon := $DefaultIcon = Import[PacletManager`PacletResource["ExternalEvaluate", "Icon"]];
-
 $LanguageOptions = <|
-	"Icon" :> None,
-	"IconCell" :> None,
-	"ShowInFrontendCellQ" -> True,
-
+	
 	(* this is a temporary implementation until we figure out how to do it properly 
 		in the meantime we need know if a system can handle this feature
 	*)
@@ -166,7 +158,6 @@ $LanguageOptions = <|
     	FileExistsQ[#],
     	! DirectoryQ[#]
     ],
-    "NormalizeTargetExpressions" -> False,
 
 	"DependencyTestFile" -> None,
 	"ProgramFileFunction" -> Function[None],
@@ -292,10 +283,6 @@ $LanguageOptions = <|
 |>
 
 
-toImage[spec_] := 
-	SelectFirst[spec, MatchQ[Except[None|_Missing|Null|Automatic|_?FailureQ]]]
-toImage[spec_, rules_] :=
-	Replace[toImage[spec], rules]
 
 makeTutorialFunction[lang_] := 
 	Function[
@@ -318,23 +305,17 @@ makeTutorialFunction[lang_] :=
 		]
 	]
 
-$Processors = {
-	"TargetPattern" -> Function[
-		Alternatives @@  #TargetNormalizationRules[[All, 1]]
-	],
+
+$LanguageProcessors = {
+
+	(* Internal flag that is marking the system as loaded *)
+	"Loaded" -> Function[True], 
+
 	"TargetNormalizationFunction" -> Function @ Replace[
 		Append[#TargetNormalizationRules, t_ :> autofail[$Failed, "invalidTarget", t]]
 	],
 
-	"Icon" -> Function @ toImage[
-		{#Icon, #IconCell, $DefaultIcon}
-	],
-	"IconCell" -> Function @ toImage[
-		{#IconCell, #Icon, $DefaultIcon}, {
-			img:_?ImageQ :> ToBoxes @ ImageResize[img, 20],
-			img:_Graphics :> ToBoxes @ img
-		}
-	],
+
 	"CommandNormalizationFunction" -> makeCommandNormalizationFunction,
 	"DependencyTestFile" -> Function @ Flatten @ List @ ReplaceAll[
 		#DependencyTestFile, {
@@ -353,21 +334,7 @@ $Processors = {
 	]
 }
 
-applyProcessors[target_Association, rules_Association] := 
-	applyProcessors[target, Normal[rules]]
-applyProcessors[target_Association, rules___List] :=
-	Module[
-		{res = target},
-		Apply[
-			Function[
-				{lhs, rhs},
-				res[[lhs]] = rhs[res];
-			],
-			{rules},
-			{2}
-		];
-		res
-	]
+
 
 ExternalEvaluate`RegisterSystem::usage = "ExternalEvaluate`RegisterSystem[lang,opts] adds heuristics/options for the specified system so that the system can be discovered and used with the ExternalEvaluate system."
 
@@ -387,6 +354,10 @@ ExternalEvaluate`RegisterSystem[lang_?StringQ, parent_?StringQ, sysopts_?Associa
 (*this will add options for the specified language so that external evaluate can find/use it*)
 ExternalEvaluate`RegisterSystem[lang_?StringQ, sysopts_?AssociationQ, opts:OptionsPattern[]]:=
 	$LanguageInformations[lang] = applyProcessors[
-		<|"System" -> lang, $LanguageOptions, sysopts|>,
-		$Processors
+		<|
+			$LanguageInformations[lang], 
+			$LanguageOptions,
+			sysopts
+		|>,
+		$LanguageProcessors
 	]

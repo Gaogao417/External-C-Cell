@@ -5,7 +5,7 @@ Options[FindExternalEvaluators] = {"ResetCache"->False}
 FindExternalEvaluators[lang:_String|{___String}|All:All, opts:OptionsPattern[]]:= (
     If[TrueQ[OptionValue["ResetCache"]], cleanupRegistry[lang]];
     Dataset[
-        decrypt @ getAllInstallations[lang],
+        decrypt @ getAllInstallations[lang, {"System", "Version", "Target", "Executable", "Registered"}],
         HiddenItems -> {"Executable"}
     ]
 )

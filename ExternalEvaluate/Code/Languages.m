@@ -1,37 +1,29 @@
 
-Needs["PacletManager`"]
 
-$ordering = <|"Python" -> 1, "R" -> 2, "Julia" -> 3, "Octave" -> 4, "Java" -> 5, "Ruby" -> 6, "NodeJS" -> 7, "Shell" -> 8, "SQL" -> 9, "SQL-JDBC" -> 10|>
 
+
+
+getExtension[All, rest___] :=
+    getExtension[
+        DeleteDuplicates[
+            PacletFind["*", <|"Extension" -> "ExternalEvaluate"|>], 
+            Function[
+                {lhs, rhs},
+                Or[
+                    rhs["Name"] === lhs["Name"],
+                    rhs["Name"] === "ExternalEvaluate_WebDriver", (* we will remove those 2 lines during the next major release 12.4 / 13.0 *)
+                    lhs["Name"] === "ExternalEvaluate_WebDriver"
+                ]
+            ]
+        ],
+        rest
+    ]
 getExtension[paclet_List, rest___] := 
     Map[getExtension[#, rest] &, paclet]
-getExtension[paclet_String, name_] := 
-    getExtension[PacletObject[paclet], name]
-getExtension[paclet_PacletObject, name_, default_ : Null] := 
-    First[Cases[paclet["Extensions"], {"ExternalEvaluate", ___, name -> e_, ___} ->e], default]
-
-extractLanguages[paclet_List] := 
-    Map[extractLanguages, paclet]
-
-extractLanguages[paclet_] := 
-    extractLanguages[paclet, getExtension[paclet, "Language"]]
-
-extractLanguages[paclet_, s_List] := 
-    Map[extractLanguages[paclet, #] &, s]
-
-extractLanguages[paclet_, _Missing|Null] :=
-    extractLanguages[
-        paclet, 
-        Replace[
-            StringSplit[paclet["Name"], "ExternalEvaluate_", 2], {
-                {_, name_} :> name, 
-                _ -> {}
-            }
-        ]
-    ]
-
-extractLanguages[paclet_, s_String] :=
-    s -> paclet["Name"]
+getExtension[paclet_String, rest___] := 
+    getExtension[PacletObject[paclet], rest]
+getExtension[paclet_PacletObject, default_ : Null] := 
+    First[Cases[paclet["Extensions"], {"ExternalEvaluate", rules___} -> Association["Paclet" -> paclet["Name"], rules]], default]
 
 (*
 
@@ -41,7 +33,8 @@ extractLanguages[paclet_, s_String] :=
 
     To do that we need to load all systems.
 
-    $AvailableLanguages is a mapping containing the system name -> paclet name.
+    
+$LanguageInformations is a mapping containing the system name -> paclet name.
     $LanguageInformations is where RegisterExternalSystem is storing system informations.
 
     When we first access the symbol, we first need to initialize it to a blank association, then we load all the code in all paclets.
@@ -50,28 +43,104 @@ extractLanguages[paclet_, s_String] :=
     Once all systems are loaded we can return the registry.
  *)
 
-$AvailableLanguages := $AvailableLanguages = 
-    KeySortBy[
-        <|extractLanguages @ PacletFind["*", <|"Extension" -> "ExternalEvaluate"|>]|>,
-        {Lookup[$ordering, #, 1000], #} &
-    ]
+$LanguagePacletOptions = <|
+    "TargetAllowedHeads" -> {}, 
+    "Ordering" -> Automatic, 
+    "ShowInFrontendCellQ" -> True,
+    "Context" -> {},
+    "Icon" -> None,
+    "IconCell" -> None,
+    "Paclet" -> None,
+    "System" -> None,
+    "Loaded" -> False
+|>
 
-$LanguageInformations := Block[
-    {$ContextPath = $ContextPath},
-    $LanguageInformations = <||>;
-    Cases[
-        DeleteDuplicates @ Flatten @ getExtension[
-            DeleteDuplicates @ Values @ $AvailableLanguages,
-            "Context"
+
+SetAttributes[toImage, HoldRest]
+
+toImage[] := None
+toImage[None|_Missing|Null|Automatic|_?FailureQ, rest___] :=
+    toImage[rest]
+toImage[(Hold|HoldComplete)[spec___], rest___] := 
+    toImage[spec, rest]
+toImage[spec:_String|_File, rest___] := 
+    toImage[Import[spec], rest]
+toImage[spec_, ___] :=
+    spec
+
+$LanguagePacletProcessors = <|
+    "TargetAllowedHeads" -> Function[
+        Alternatives @@ ToExpression[
+            Flatten @ #TargetAllowedHeads,
+            InputForm,
+            Function[sym, HoldPattern[Blank[sym]], HoldFirst]
+        ]
+    ],
+    "Icon" -> Function[
+        Hold @ checkAndSetCache[
+            {#System, "Icon"},
+            toImage[
+                #Icon, 
+                #IconCell, 
+                PacletManager`PacletResource[#Paclet, "Icon"], 
+                PacletManager`PacletResource[#Paclet, "IconCell"], 
+                PacletManager`PacletResource["ExternalEvaluate", "Icon"]
+            ]
+        ]
+    ],
+    "IconCell" -> Function[
+        Hold @ checkAndSetCache[
+            {#System, "IconCell"},
+            Replace[
+                toImage[
+                    #IconCell, 
+                    PacletManager`PacletResource[#Paclet, "IconCell"], 
+                    PacletManager`PacletResource["ExternalEvaluate", "IconCell"], 
+                    #Icon
+                ], {
+                    img:_?ImageQ :> ToBoxes @ ImageResize[img, 20],
+                    img:_Graphics :> ToBoxes @ img
+                }
+            ]
+        ]
+    ]
+|>
+
+
+
+normalizeLanguageInfo[name_String, rules___] := 
+    name -> applyProcessors[<|
+            $LanguagePacletOptions,
+            rules, 
+            "System" -> name
+        |>,
+        $LanguagePacletProcessors
+    ]
+normalizeLanguageInfo[(h:Rule|RuleDelayed)[name_, info_], rules___] := normalizeLanguageInfo[name, info, rules]
+
+
+$LanguageInformations := $LanguageInformations = 
+    SortBy[
+        Association @ Replace[
+            getExtension[All], {
+                e:KeyValuePattern[_["System", any_String]] :> 
+                    normalizeLanguageInfo[any, rest],
+                e:KeyValuePattern[_["System", any_List]]   :> 
+                    Map[normalizeLanguageInfo[#, e] &, any],
+                e:KeyValuePattern[_["System", any:_Rule|_RuleDelayed]]   :> 
+                    normalizeLanguageInfo[any, e],
+                e:KeyValuePattern[_["System", any:_Association]]  :> 
+                    Map[normalizeLanguageInfo[#, e] &, Normal[any]]
+            },
+            {1}
         ],
-        context_String :> Get[context]
-    ];
-    $LanguageInformations
-]
+        {Key["Ordering"], Key["System"]}
+    ]
 
 (* 
     this function is responsible for getting language information that are registered when a paclet is loaded.
-    $AvailableLanguages contains information about local and remote paclets, the first time a paclet is loaded
+    
+$LanguageInformations contains information about local and remote paclets, the first time a paclet is loaded
     we are checking remotely if there is an update, otherwise we are just loading the code and returning the assoc
     registered by RegisterSystem
 *)
@@ -82,36 +151,64 @@ GetLanguageRules[All, rest___] := GetLanguageRules[GetLanguageRules[], rest]
 
 GetLanguageRules[s_List, rest___] := AssociationMap[GetLanguageRules[#, rest] &, s]
 
-GetLanguageRules[s_String, rest___] /; AssociationQ[$LanguageInformations[s]] := 
-    Part[$LanguageInformations, s, rest]
+GetLanguageRules[s_String, k: (Alternatives @@ Keys[$LanguagePacletOptions])] := 
+    If[
+        KeyExistsQ[$LanguageInformations, s],
+        $LanguageInformations[[s, k]],
+        autofail[$Failed, "unknownSys", s]
+    ]
 
-GetLanguageRules[s_String, rest___] := 
-    autofail[$Failed, "unknownSys", s]
+GetLanguageRules[s_String, prop_String] := 
+    Which[
+        TrueQ[$LanguageInformations[[s, "Loaded"]]],
+        $LanguageInformations[[s, prop]],
+        KeyExistsQ[$LanguageInformations, s],
+        Block[
+            {$ContextPath = $ContextPath},
+            $LanguageInformations[[s, "Loaded"]] = True;
+            Scan[
+                Get, 
+                Flatten @ List @ GetLanguageRules[s, "Context"]
+            ];
+            GetLanguageRules[s, prop]
+        ],
+        True,
+        autofail[$Failed, "unknownSys", s]
+    ]
+
+GetLanguageRules[s_String] := (
+    GetLanguageRules[s, "ReturnTypes"]; (* need to trigger the loading, any non paclet property is fine *)
+    $LanguageInformations[[s]]
+)
+
+
+
+guard[GetLanguageRules]
 
 (* normalization function is used to dispatch arbitrary expressions to the right evaluator *)
+
 NormalizationFunction := 
-    NormalizationFunction = Replace @ Join[
+    NormalizationFunction = Replace @ Flatten @ {
 
         (* file and string here are simply not accepted *)
-        {
-            _File :> 
-                returnUnevaluated[$Failed], 
-            system_String :> 
-                <|"System" -> system|>,
-            {opts:OptionsPattern[]|_Association?AssociationQ} :> 
-                <|opts|>,
-            {system_, opts:OptionsPattern[]|_Association?AssociationQ} :> 
-                <|NormalizationFunction[system], opts|>,
+        
+        _File :> 
+            returnUnevaluated[$Failed], 
+        system_String :> 
+            <|"System" -> system|>,
+        {opts:OptionsPattern[]|_Association?AssociationQ} :> 
+            <|opts|>,
+        {system_, opts:OptionsPattern[]|_Association?AssociationQ} :> 
+            <|NormalizationFunction[system], opts|>,
 
-            {system_, target:_File|_String, opts:OptionsPattern[]|_Association?AssociationQ} :> 
-                <|"System" -> system, "Target" -> target, opts|>,
+        {system_, target:_File|_String, opts:OptionsPattern[]|_Association?AssociationQ} :> 
+            <|"System" -> system, "Target" -> target, opts|>,
 
-            {system_, target_, opts:OptionsPattern[]|_Association?AssociationQ} :> 
-                <|NormalizationFunction[target], "System" -> system, opts|>,
+        {system_, target_, opts:OptionsPattern[]|_Association?AssociationQ} :> 
+            <|NormalizationFunction[target], "System" -> system, opts|>,
 
-            (h:Rule|RuleDelayed)[system_, type_] :> 
-                <|NormalizationFunction[system], h["ReturnType", type]|>
-        },
+        (h:Rule|RuleDelayed)[system_, type_] :> 
+            <|NormalizationFunction[system], h["ReturnType", type]|>,
 
         (* 
             first we collect all normalization rules for all systems 
@@ -122,17 +219,20 @@ NormalizationFunction :=
             is normally handled as System by ExternalEvaluate and StartExternalSession
         *)
 
-        Normal @ Association @ KeyValueMap[
+        KeyValueMap[
             Function[
-                {system, rules},
+                {system, pattern},
                 If[
-                    TrueQ @ GetLanguageRules[system, "NormalizeTargetExpressions"],
-                    Replace[rules, h_[lhs_, rhs_] :> h[lhs, <|"System" -> system, "Target" -> rhs|>], {1}],
+                    Length[pattern] > 0,
+                    expr:pattern :> <|
+                        "System" -> system,
+                        "Target" -> GetLanguageRules[system, "TargetNormalizationFunction"][expr]
+                    |>,
                     {}
                 ]
             ],
-            GetLanguageRules[All, "TargetNormalizationRules"]
+            GetLanguageRules[All, "TargetAllowedHeads"]
         ],
         (* if nothing is matching we can raise an error *)
-        {s_ :> returnUnevaluated[$Failed, "unknownSys", s]}
-    ]
+        s_ :> returnUnevaluated[$Failed, "unknownSys", s]
+    }

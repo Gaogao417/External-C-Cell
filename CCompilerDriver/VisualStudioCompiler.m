@@ -425,16 +425,22 @@ LibraryPathQ[lib_] :=
 	]
 
 VisualStudioCompiler["ExtractErrors"][buildOutput_] := 
-	Module[{lines, errors},
+	Module[{lines, errors, notes, warnings},
 		lines = StringSplit[buildOutput, {"\n", "\r\n", "\r"}];
-		errors = Select[lines, errorQ];
-		errors
+		{errors, notes, warnings} = Select[lines, #]&/@{errorQ, noteQ, warningQ};
+		{errors, notes, warnings}
 	]
 
 errorQ[line_String] := 
-	StringMatchQ[line, ___ ~~ ":" ~~ ___ ~~ "error " ~~ ___ ~~ ":" ~~ ___]
+	StringMatchQ[line, ___ ~~ ":" ~~ ___ ~~ "error" ~~ ___ ~~ ":" ~~ ___]
+noteQ[line_String] := 
+	StringMatchQ[line, ___ ~~ ":" ~~ ___ ~~ "note" ~~ ___ ~~ ":" ~~ ___]
+warningQ[line_String] := 
+	StringMatchQ[line, ___ ~~ ":" ~~ ___ ~~ "warning" ~~ ___ ~~ ":" ~~ ___]
 
 errorQ[_] := False
+noteQ[_] := False
+warningQ[_] := False
 
 VisualStudioCompiler[method_][args___] := 
 	CCompilerDriver`CCompilerDriverBase`BaseDriver[method][args]

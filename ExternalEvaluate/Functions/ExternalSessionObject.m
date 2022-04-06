@@ -87,7 +87,7 @@ ExternalSessionObject /: MakeBoxes[session:ExternalSessionObject[uuid_String?Str
 		session,
 		(*third argument is the icon to use*)
 		Show[
-			GetLanguageRules[session["System"], "Icon"], 
+			ReleaseHold @ GetLanguageRules[session["System"], "Icon"], 
 			ImageSize -> Dynamic[{Automatic, 3.5 (CurrentValue["FontCapHeight"]/AbsoluteCurrentValue[Magnification])}]
 		],
 		(*the next argument is the always visisble properties*)

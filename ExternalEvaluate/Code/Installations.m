@@ -63,7 +63,7 @@ registryLocation[] := $RegistryLocation
 (* The test suite is blocking this variable in order to test clean installations *)
 
 cleanupRegistry[sys_String] := (
-    ExternalEvaluate`Private`GetLanguageRules[sys]; (* this will propagate failure if sys is not known *)
+    ExternalEvaluate`Private`GetLanguageRules[sys, "Loaded"]; (* this will propagate failure if sys is not known *)
     setRegistryValue @ registryLocation[sys];
 )
 cleanupRegistry[s_List] := Scan[cleanupRegistry, s];
@@ -108,13 +108,16 @@ getRegisteredInstallations[lang_String] :=  Replace[
     }
 ]
 
-getLocalInstallations[lang_String, rest___] :=
-    Association @ Map[
-        addUUID3 @ makeInstallation[lang, #, rest] &, 
-        (*search for all installations that have an executable file matching the pattern in the directories*)
-        Select[
-            GetLanguageRules[lang, "TargetDiscoveryFunction"][],
-            GetLanguageRules[lang, "TargetValidationFunction"]     
+getLocalInstallations[lang_String, default_:Automatic] :=
+    With[
+        {time = UnixTime[]},
+        Association @ Map[
+            addUUID3 @ makeInstallation[lang, #, default, time] &, 
+            (*search for all installations that have an executable file matching the pattern in the directories*)
+            Select[
+                GetLanguageRules[lang, "TargetDiscoveryFunction"][],
+                GetLanguageRules[lang, "TargetValidationFunction"]     
+            ]
         ]
     ]
 
@@ -127,6 +130,10 @@ getAllInstallations[lang_String] :=
         getLocalInstallations[lang, False],
         getRegisteredInstallations[lang]
     ]
+
+getAllInstallations[lang_String, part_] := 
+    Part[getAllInstallations[lang], All, part]
+
 
 (*
 
@@ -246,9 +253,12 @@ updateInstallation[True, lang_String, targets_List] :=
     updateInstallation[
         True,
         lang,
-        installationlist @ Map[
-            addUUID3 @ checkDependencies @ makeInstallation[lang, #, True] &,
-            targets
+        With[
+            {time = UnixTime[]},
+            installationlist @ Map[
+                addUUID3 @ checkDependencies @ makeInstallation[lang, #, True, time] &,
+                targets
+            ]
         ]
     ]
 
@@ -270,7 +280,7 @@ updateInstallation[True, lang:{___String}, rest___] :=
         lang
     ]
 
-makeInstallation[lang_, executable_, registered_:Automatic] :=
+makeInstallation[lang_, executable_, registered_, time_] :=
     With[
         {exec = normalizeTarget[lang, executable]},
         <|
@@ -295,7 +305,8 @@ makeInstallation[lang_, executable_, registered_:Automatic] :=
                 ],
                 registered,
                 "MissingDependencies"
-            ]
+            ],
+            "UnixTime" -> time
         |>
     ]
 

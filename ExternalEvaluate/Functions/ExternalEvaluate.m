@@ -105,13 +105,27 @@ zmqSocketWrite := zmqSocketWrite = (
 	ZeroMQLink`ZMQSocketWriteMessage
 )
 
-zmqread[session_, callback_] := (
-	While[
-		Not @ SocketReadyQ[session["Socket"], 0.01],
-		callback @ ReadString[session["Process"], EndOfBuffer]
-	];
-	SocketReadMessage[session["Socket"]]
-)
+zmqread[session_] := 
+
+	Module[
+		{result = $Aborted},
+		flushOutput[
+			session["Process"],
+			Print,
+			Function @ Print @ Style[#, "Message", FontFamily -> "Source Code Pro"],
+			Function[
+				If[
+					SocketReadyQ[session["Socket"], 0.01],
+					result = SocketReadMessage[session["Socket"]];
+					$Aborted
+				]
+			]
+		];
+		result
+	]
+
+
+
 
 zmqwrite[session_, bytes_String] := zmqwrite[session, StringToByteArray[bytes]];
 zmqwrite[session_, bytes_ByteArray] := zmqSocketWrite[session["Socket"], bytes];
@@ -152,6 +166,7 @@ processorFactory[prolog_, Null]    := <|"Prolog" -> prolog, #1|> &
 	
 
 
+
 externalEvaluateLink[_, _, {}] := {}
 
 externalEvaluateLink[type_, sessionProxy[s_], rest___] := 
@@ -186,32 +201,7 @@ externalEvaluateLink[type_, session_, messages_, processor_] :=
 		]
 	]
 
-
-buffer[args___][rest___] := buffer[args, rest]
-buffer[s__String, EndOfLine, rest___] := (Print @ StringJoin @ s; buffer[rest]);
-
-createStdoutCallback[] := With[
-	{u = Unique[]},
-	u = buffer[];
-	Replace @ {
-		"" :> Null,
-		s_String :> Set[u, u @@ StringSplit[s, "\n" -> EndOfLine]],
-		EndOfFile :> (u[EndOfLine]; ClearAll[u])
-	}
-]
-
 externalEvaluateLink[type_, session_, messages_, processor_, serializer_, deserializer_] :=
-	externalEvaluateLink[
-		type,
-		session,
-		messages,
-		processor,
-		serializer,
-		deserializer,
-		createStdoutCallback[]
-	]
-
-externalEvaluateLink[type_, session_, messages_, processor_, serializer_, deserializer_, stdoutcallback_] :=
 	Association @ Reap @ readAll[
 		session -> writeMessage[
 			session, 
@@ -222,9 +212,10 @@ externalEvaluateLink[type_, session_, messages_, processor_, serializer_, deseri
 		],
 		processor, 
 		serializer, 
-		deserializer,
-		stdoutcallback
+		deserializer
 	]
+
+
 
 reorderSessions[{session_ -> Null, rest__}] := 
 	{session, Null, {rest}}
@@ -236,21 +227,21 @@ reorderSessions[sessions_Association] :=
 		{assoc[socket], sessions[assoc[socket]], sessions}
 	]
 
-externalEvaluateLink[type_, sessionProxy[initials___], messages_, processor_, serializer_, deserializer_, stdoutcallback_] := 
+externalEvaluateLink[type_, sessionProxy[initials___], messages_, processor_, serializer_, deserializer_] := 
 	Module[
 		{session, rest, queue, sessions = Map[# -> Null &, {initials}]},
 		Association @ Reap[
 			Scan[
 				Function[
 					{session, queue, rest} = reorderSessions[sessions];
-					readAll[{session, queue}, processor, serializer, deserializer, stdoutcallback];
+					readAll[{session, queue}, processor, serializer, deserializer];
 					queue    = writeMessage[session, #, processor, serializer, deserializer];
 					sessions = Append[rest, session -> queue];
 				],
 				messages
 			];
 			Scan[
-				readAll[#, processor, serializer, deserializer, stdoutcallback] &,
+				readAll[#, processor, serializer, deserializer] &,
 				Normal @ sessions
 			];
 			{}
@@ -277,7 +268,7 @@ sow[type_String, error:_Failure|$Failed] := (emit["sessionfailure", type, error]
 sow[type_String, result_] := Null
 sow[id_, result_] := Sow[id -> result, tag]
 
-readAll[_[session_, values_List], processor_, serializer_, deserializer_, stdoutcallback_] := 
+readAll[_[session_, values_List], processor_, serializer_, deserializer_] := 
 	errorHandler[
 		session,
 		Module[
@@ -288,14 +279,12 @@ readAll[_[session_, values_List], processor_, serializer_, deserializer_, stdout
 					result = ExternalEvaluateKeepListening[];
 					While[
 						MatchQ[result, _ExternalEvaluateKeepListening|_PythonKeepListening],
-						result = deserializer @ zmqread[session, stdoutcallback]
+						result = deserializer @ zmqread[session]
 					];
 					sow[id, result]
 				],
 				values
 			];
-			stdoutcallback @ ReadString[session["Process"], EndOfBuffer];
-			stdoutcallback @ EndOfFile;
 			{}
 		]
 	]

@@ -95,7 +95,10 @@ $SessionNormalizationRules = {
                 Automatic|None|_Missing|Default :> 
                     decrypt @ Lookup[
                         SelectFirst[
-                            getRegisteredInstallations[#System],
+                            SortBy[
+                                getRegisteredInstallations[#System], 
+                                - #["UnixTime"] & (* Unix time might not be present in some installation *)
+                            ],
                             Function[
                                 spec,
                                 compatibleVersion[#System, spec["Version"], #Version]

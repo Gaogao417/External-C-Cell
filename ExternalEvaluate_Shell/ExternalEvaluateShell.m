@@ -2,179 +2,143 @@ BeginPackage["ExternalEvaluateShell`"]
 
 Begin["`Private`"]
 
-Needs["PacletManager`"]
+(* 
+    Technical debt: 
+    properly export and use runShellCommand from a common location insteaf of hardcoding the path, 
+    see ExternalEvaluate/Code/ExternalEvaluateShell.m for more details
+*)
 
-$Windows = $OperatingSystem === "Windows"
+flushOutput    := ExternalEvaluate`Private`flushOutput;
+$Windows       := ExternalEvaluate`Private`$Windows;
+$WindowsPrompt := ExternalEvaluate`Private`$WindowsPrompt;
+$NewLine       := ExternalEvaluate`Private`$NewLine;
+$ShellEncoding := ExternalEvaluate`Private`$ShellEncoding;
+$UUIDGenerator := ExternalEvaluate`Private`$UUIDGenerator;
+$UUID          := ExternalEvaluate`Private`$UUID;
 
-$UUID = "4e3775c88b494ec9a9b3fdc2e98aff20-"
-$UUIDLength = StringLength[$UUID]
-$UUIDCommand = StringJoin["echo ", $UUID, If[$Windows, "%ErrorLevel%-$?", "$?"]]
-$WindowsPrompt = "074ad1caa43840278475b0e838427885>"
-$NewLine = If[$Windows, "\r\n", "\n"]
+(* command logic *)
 
-writeLine[p:HoldPattern[_ProcessObject], rest___] := writeLine[ProcessConnection[p, "StandardInput"], rest]
-writeLine[p:HoldPattern[_OutputStream], s_String] := WriteLine[p, s]
-
-buffer[callback__][args___][rest___] := buffer[callback][args, rest]
-buffer[callback__][EndOfLine, rest___] := buffer[callback][rest]
-buffer[callback__][s__String, EndOfLine, rest___] := (
-    Composition[callback, StringJoin][s]; 
-    buffer[callback][rest]
-);
-
-flushStdout[p_] := flushStdout[p, Identity, Infinity]
-flushStdout[p_, processor_] := flushStdout[p, processor, Infinity]
-flushStdout[p_, processor_, timeout_] := 
-    While[
-        True,
-        Replace[
-            TimeConstrained[Read[ProcessConnection[p, "StandardOutput"], String], timeout], {
-                s_String :> 
-                    If[
-                        processor[s];
-                        StringStartsQ[s, $UUID],
-                        Return[Null]
-                    ],
-                (* bug on windows. for some reason I cannot reproduce in a simple example why EndOfFile is returned by powershell 
-                    even if the process is still running - riccardod
-                *)
-                EndOfFile :> 
-                    If[
-                        ProcessStatus[p] =!= "Running",
-                        Return[Null]
-                    ],
-                $Aborted :> 
-                    $Aborted,
-                any_ :> 
-                    Throw[{p, any}] (* debug code *)
-            }
-        ]
-    ]
-
-SetAttributes[collect, HoldFirst]
-
-merge[key[s_String], rest___] := merge[s, rest]
-merge[k:("StandardError"|"StandardOutput"), list_] := k -> StringTrim @ StringJoin @ Riffle[list, $NewLine]
-merge[k:"ExitCode", {rest___, "0"|"True"}] := k -> 0
-merge[k:"ExitCode", {rest___, "1"|"False"}] := k -> 1
-merge[k:"ExitCode", {rest___, "$?"}] := merge[k, {rest}]
-merge[k:"ExitCode", {___, s_String}] := k -> If[StringMatchQ[s, DigitCharacter..], FromDigits[s], s]
-
-merge[k_, el_] := k -> Last[el]
-
-collect[expr_] := 
-    Replace[
-        Association @ Quiet[Reap[expr; {}, _key, merge], {BinaryWrite::errfile}], {
-            a:KeyValuePattern["ExitCode" -> 0] :> Success["ExecutionCompleted", a],
-            a_ :> Failure["RuntimeError", a]
-        }
-    ]
-
-write[p_, cmd_] := collect @ Block[
-    {stderr, stdout, stderrcallback, stdoutcallback},
-
-    (* 
-        buffer will execute any callback when an EndOfLine is reached 
-        every time a line is completed we want to do 2 operations:
-        1. collect the line for the final result using Sow
-        2. immediately print it in the frontend
-    *)
-                
-    stderr = buffer[Print[Style[#, "Message", FontFamily -> "Source Code Pro"]] &, Sow[#, key["StandardError"]] &];
-    stdout = buffer[Print, Sow[#, key["StandardOutput"]] &];
-
-    (* 
-        now we need to define 2 closures that are executed every time something is coming out from stdout/stderr.
-        they are a bit different because stdout is always reading a full line, while stderr is always reading until the end of the buffer,
-        for this reason they are debouncing the input in a different way.
-
-        stdout 
-
-        stderr also needs to filter out everything that starts with the prompt.
-    *)
-    
-    stderrflush = Function[
-        Replace[
-            ReadString[ProcessConnection[p, "StandardError"], EndOfBuffer], {
-            "" :> Null,
-            s_String :> Set[stderr, Apply[stderr, StringSplit[s, $NewLine -> EndOfLine]]]
-        }]
-    ];
-
-
-    stdoutcallback = Function[
-        Which[
-            ! StringQ[#],
-            Null,
-            And[
-                $Windows,
-                StringStartsQ[#, $WindowsPrompt|$UUIDCommand]
-            ],
-            Null,
-            ! StringStartsQ[#, $UUID],
-            stdout = stdout[#, EndOfLine],
-            True,
-            Scan[
-                Sow[#, key["ExitCode"]] &,
-                StringSplit[#, "-"][[2;;]]
-            ]
-        ];
-        stderrflush[];
-    ];
-    
-
+runCommand[p_, cmd_] := runCommand[p, cmd, Print]
+runCommand[p_, cmd_List, rest___] := Map[runCommand[p, #, rest] &, cmd]
+runCommand[p_, cmd_String, printer_] := collect @ With[
+    {id = $UUIDGenerator},
     
     (* we send the initial value so that Reap will collect keys in the right order *)
     Sow[cmd, key["Command"]];
-    Sow["ProcessTerminated", key["ExitCode"]];
-    Sow["", key["StandardError"]];
-    Sow["", key["StandardOutput"]];
-
     
     (* we write the command *)
-    
-    writeLine[p, StringTrim[cmd]];
+    Quiet[
+        BinaryWrite[
+            ProcessConnection[p, "StandardInput"],
+            StringToByteArray[
+                StringJoin[
+                    StringTrim[cmd], 
+                    $NewLine, 
+                    "echo ",
+                    $UUID, 
+                    id,
+                    "-",
+                    If[
+                        $Windows, 
+                        (* The windows logic needs to fix several very weird behaviours.
 
-    (* we immediatily ask for the exit code, by prefixing it with a uuid *)
-    
-    writeLine[p, $UUIDCommand];
+                        1. the logic to echo the last error code is different between powershell and cmd.exe, we need to echo all 
+                        2. cmd.exe needs to reset the exit code manually otherwise if something fails the same exit code will keep popping up*)
+                        {"%ErrorLevel%-$?", $NewLine, "cmd /c \"exit /b 0\""}, 
+                        "$?"
+                    ],
+                    $NewLine
+                ], 
+                $ShellEncoding
+            ]
+        ], 
+        {BinaryWrite::errfile}
+    ];
 
     (* 
-        at this point we need to keep flushing the stderr until the command is completed. 
-        every 0.1 seconds we are also flushing everything that is coming out from StandardOutput and print it in the notebook
+        flushOutput is going to keep flushing the input unless we stop it, or the user is aborting the computation.
+        if a shell long running task is aborted the program will flush at some point, an Success symbolic wrapper where the first argument is the sender id, and the following arguments are the exit code.
+
+        if the output is flushing another Success[id, ...] it means that it was produced by a previous task it was never waited correctly, in that case we need to collect this information, so that all the output coming before a $Aborted is not collected in the final result.
+
     *)
 
-    
-    While[
-        SameQ[
-            flushStdout[p, stdoutcallback, 0.1], 
-            $Aborted
+    flushOutput[
+        p,
+        (* StandardError Callback*) 
+        Replace[
+            {   
+                Success[id, status___String] :> 
+                    Scan[
+                        Sow[#, key["ExitCode"]] &,
+                        {status}
+                    ],
+
+                _Success :> (
+                    Sow[$Aborted, key["StandardOutput"]];
+                    Sow[$Aborted, key["StandardError"]]; (* TODO: stderr might not be in sync if we just throw a terminator when reading stdout *)
+                ),
+
+                any_String :> (
+                    Sow[any, key["StandardOutput"]];
+                    printer[any]
+                )
+            }
         ],
-        stderrflush[]
-    ];
-    
-    stderrflush[];
-
-    (* the buffer might contain a non flushed line, becase it was waiting for a newline, let's flush whatever it's left there *)
-    
-    stderr[EndOfLine];
-    stdout[EndOfLine];
-
-    
+        (* StandardError Callback*) 
+        Function[
+            Sow[#, key["StandardError"]];
+            printer[Style[#, "Message", FontFamily -> "Source Code Pro"]];
+        ],
+        Function[If[#2 > 50, Pause[0.05]]],
+        id
+    ];  
 ]
 
-dispatch["expression", res_] := res
-dispatch["association", res_] := Last[res]
+
+
+(* collect, merge and dispatch logic *)
+
+SetAttributes[collect, HoldFirst]
+
+collect[expr_] := 
+    Association[
+        "Command" -> None,
+        "ExitCode" -> "ProcessTerminated",
+        "StandardError" -> "",
+        "StandardOutput" -> "",
+        Reap[expr; {}, _key, merge]
+    ]
+
+
+(* adding the merging logic, we need to collect all bits of informations collected 
+    StandardOutput and StandardError might see a $Aborted during the execution.
+    That happens if a previous command has been aborted, in that case we are still printing the output, but it should be discarded, 
+    because it wasn't coming from the same command. 
+    We might consider also issuing a message when this happens.
+*)
+
+merge[key[s_String], rest___] := merge[s, rest]
+merge[k:("StandardError"|"StandardOutput"), {___, $Aborted, Shortest[rest___]}] := k -> StringJoin @ Riffle[{rest}, $NewLine]
+merge[k:("StandardError"|"StandardOutput"), list_] := k -> StringJoin @ Riffle[list, "\n"] (* using \r\n is causing the frontend to display 2 lines *)
+merge[k:"ExitCode", {rest___, code:"0"|"1"|"True"|"False"}] := k -> ToExpression[code]
+merge[k:"ExitCode", {rest___, "$?"|"%ErrorLevel%"}] := merge[k, {rest}]
+merge[k:"ExitCode", {___, s_String}] := k -> If[StringMatchQ[s, DigitCharacter..], FromDigits[s], s]
+merge[k_, el_] := k -> Last[el]
+
+
+dispatch["expression", res:KeyValuePattern["ExitCode" -> 0|True]] := Success["ExecutionCompleted", res]
+dispatch["expression", res_] := Failure["RuntimeError", res]
+dispatch["association", res_] := res
 dispatch["exitcode", res_] := res["ExitCode"]
 dispatch["standardoutput", res_] := res["StandardOutput"]
 dispatch["standarderror", res_] := res["StandardError"]
+
 
 ExternalEvaluate`RegisterSystem[
     "Shell",
     <|
 
-        "Icon" -> Import[PacletManager`PacletResource["ExternalEvaluate_Shell", "Icon"]],
-        "IconCell" -> Import[PacletManager`PacletResource["ExternalEvaluate_Shell", "IconCell"]],
         "StringTemplateSupportQ" -> True,
 
         (*the default version exec command just runs the executable with --version as the argument*)
@@ -189,21 +153,21 @@ ExternalEvaluate`RegisterSystem[
         "VersionStringConformFunction" -> Function[
             First[StringCases[#, RegularExpression["[0-9\\.]+"]], Missing["NotAvailable"]]
         ],
-        "NonZMQInitializeFunction"-> Function[
-
+        "NonZMQInitializeFunction"-> 
             If[
                 $Windows,
-                writeLine[#2, "function prompt { return '" <> $WindowsPrompt <> "'} \n " <> $UUIDCommand];
-                flushStdout[#2];
-                ReadString[ProcessConnection[#2, "StandardError"], EndOfBuffer];
-            ]
-
-        ],
+                Function @ runCommand[
+                    #2, 
+                    "function prompt { return '" <> $WindowsPrompt <> "'}", 
+                    Function[Null]
+                ],
+                Function @ read[ProcessConnection[#2, "StandardError"]]
+            ],
         "NonZMQEvaluationFunction"-> Function[
             {obj, msg},
             dispatch[
                 msg["return_type"], 
-                write[
+                runCommand[
                     obj["Process"], 
                     msg["input"]
                 ]
@@ -213,7 +177,7 @@ ExternalEvaluate`RegisterSystem[
         "ScriptExecCommandFunction" -> 
             If[
                 $Windows,
-                Function[{exec, file, uuid}, {exec, "-noexit"}],
+                Function[{exec, file, uuid}, {exec, "-noexit"}], (* add "/K", "chcp", "65001" to use UTF-8 encoding *)
                 Function[{exec, file, uuid}, {exec}]
             ],
 
